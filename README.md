@@ -12,7 +12,7 @@ A simple Fabric mod for Minecraft that adds mandatory password authentication to
     *   Temporarily removes OP status from players upon joining until they authenticate.
     *   Removes OP status from players upon disconnecting as a safety measure.
     *   Restores OP status after successful authentication if the player was originally OP.
-*   **Position Freeze:** Keeps players in Spectator mode at their join location until authenticated.
+*   **Position Freeze & Safety:** Players are placed in Spectator mode and teleported to a safe, fixed location (0, calculated surface Y, 0) upon joining if authentication is needed. They are kept at this location until authenticated, preventing coordinate leakage. Their original position is restored upon successful login.
 
 ## Commands
 

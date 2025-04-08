@@ -14,6 +14,9 @@ import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.GameMode;
+import net.minecraft.world.Heightmap;
+import net.minecraft.world.World;
+import net.minecraft.server.world.ServerWorld;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,7 +56,8 @@ public class Safeserver implements ModInitializer {
 	private final Set<UUID> authenticatingPlayers = new HashSet<>();
 	// State storage for authenticating players
 	private final Map<UUID, GameMode> originalGameModes = new HashMap<>();
-	private final Map<UUID, Vec3d> initialPositions = new HashMap<>();
+	private final Map<UUID, Vec3d> initialPositions = new HashMap<>(); // This will now store the SAFE position for freezing
+	private final Map<UUID, Vec3d> originalPositionsBeforeAuth = new HashMap<>(); // Store original position here
 	private final Map<UUID, Boolean> originalOpStatus = new HashMap<>();
 
 	// Gson instance for JSON handling
@@ -102,11 +106,16 @@ public class Safeserver implements ModInitializer {
 					LOGGER.info("Player {} needs to log in.", playerName);
 					authenticatingPlayers.add(playerUuid);
 					originalGameModes.put(playerUuid, player.interactionManager.getGameMode());
-					Vec3d joinPos = player.getPos(); // Store exact position
-					initialPositions.put(playerUuid, joinPos);
+					Vec3d originalPos = player.getPos(); // Store original position
+					originalPositionsBeforeAuth.put(playerUuid, originalPos);
+					// Calculate safe Y position
+					ServerWorld overworld = server.getWorld(World.OVERWORLD);
+					int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
+					Vec3d safePos = new Vec3d(0.5, safeY + 1.0, 0.5); // Centered on block, 1 block above surface
+					initialPositions.put(playerUuid, safePos); // Store safe position for freezing
 					player.changeGameMode(GameMode.SPECTATOR);
-					// Use network handler for initial teleport as well
-					player.networkHandler.requestTeleport(joinPos.getX(), joinPos.getY() + 0.1, joinPos.getZ(), player.getYaw(), player.getPitch());
+					// Teleport to safe location immediately
+					player.networkHandler.requestTeleport(safePos.getX(), safePos.getY(), safePos.getZ(), 0, 0);
 					player.sendMessage(Text.literal("Welcome back! Please login using /login <password>"), false);
 				}
 			} else {
@@ -115,11 +124,16 @@ public class Safeserver implements ModInitializer {
 					LOGGER.info("Player {} needs to set a password.", playerName);
 					authenticatingPlayers.add(playerUuid);
 					originalGameModes.put(playerUuid, player.interactionManager.getGameMode());
-					Vec3d joinPos = player.getPos(); // Store exact position
-					initialPositions.put(playerUuid, joinPos);
+					Vec3d originalPos = player.getPos(); // Store original position
+					originalPositionsBeforeAuth.put(playerUuid, originalPos);
+					// Calculate safe Y position
+					ServerWorld overworld = server.getWorld(World.OVERWORLD);
+					int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
+					Vec3d safePos = new Vec3d(0.5, safeY + 1.0, 0.5); // Centered on block, 1 block above surface
+					initialPositions.put(playerUuid, safePos); // Store safe position for freezing
 					player.changeGameMode(GameMode.SPECTATOR);
-					// Use network handler for initial teleport as well
-					player.networkHandler.requestTeleport(joinPos.getX(), joinPos.getY() + 0.1, joinPos.getZ(), player.getYaw(), player.getPitch());
+					// Teleport to safe location immediately
+					player.networkHandler.requestTeleport(safePos.getX(), safePos.getY(), safePos.getZ(), 0, 0);
 					player.sendMessage(Text.literal("Welcome! This server requires authentication."), false);
 					player.sendMessage(Text.literal("Please set your password using /setpassword <password>"), false);
 				}
@@ -133,7 +147,8 @@ public class Safeserver implements ModInitializer {
 			// Remove player from auth process and cleanup state
 			if (authenticatingPlayers.remove(playerUuid)) {
 				originalGameModes.remove(playerUuid);
-				initialPositions.remove(playerUuid);
+				initialPositions.remove(playerUuid); // Remove safe freeze position
+				originalPositionsBeforeAuth.remove(playerUuid); // Remove original position
 				originalOpStatus.remove(playerUuid);
 				LOGGER.info("Player {} ({}) disconnected during authentication. Cleaned up state.", player.getName().getString(), playerUuid);
 			}
@@ -173,7 +188,7 @@ public class Safeserver implements ModInitializer {
 			Vec3d initialPos = initialPositions.get(playerUuid);
 			
 			if (player != null && initialPos != null) {
-				// Keep teleporting them back to their initial spot using network handler
+				// Keep teleporting them back to their initial spot (the safe spot) using network handler
 				if (player.getX() != initialPos.getX() || player.getY() != initialPos.getY() || player.getZ() != initialPos.getZ()) {
 					// requestTeleport handles sending the S2C packet
 					player.networkHandler.requestTeleport(initialPos.getX(), initialPos.getY(), initialPos.getZ(), player.getYaw(), player.getPitch());
@@ -184,6 +199,8 @@ public class Safeserver implements ModInitializer {
 				authenticatingPlayers.remove(playerUuid);
 				initialPositions.remove(playerUuid);
 				originalGameModes.remove(playerUuid);
+				originalPositionsBeforeAuth.remove(playerUuid); // Clean up original position too
+				originalOpStatus.remove(playerUuid);
 			}
 		}
 	}
@@ -369,7 +386,8 @@ public class Safeserver implements ModInitializer {
 
 	private boolean restorePlayerState(UUID playerUuid) {
 		GameMode originalMode = originalGameModes.remove(playerUuid);
-		initialPositions.remove(playerUuid); // Stop freezing position
+		initialPositions.remove(playerUuid); // Stop freezing position (at safe spot)
+		Vec3d originalPos = originalPositionsBeforeAuth.remove(playerUuid); // Get original position
 		Boolean wasOp = originalOpStatus.remove(playerUuid); // Get and remove original OP status
 
 		// Get player instance using the stored server instance
@@ -379,15 +397,60 @@ public class Safeserver implements ModInitializer {
 
 		if (player != null) {
 			String playerName = player.getName().getString();
-			if (originalMode != null) {
-				player.changeGameMode(originalMode);
-				LOGGER.info("Restored original gamemode ({}) for player {}.", originalMode, playerName);
-			} else {
-				LOGGER.warn("Could not find original gamemode for UUID {} (Player: {}).", playerUuid, playerName);
-				success = false;
+
+			// --- Bug Fix: Check if player logged out during authentication --- 
+			boolean loggedOutDuringAuth = false;
+			if (originalMode == GameMode.SPECTATOR && originalPos != null && this.serverInstance != null) {
+				// Calculate what the safe position would be right now
+				ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
+				int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
+				Vec3d currentSafePos = new Vec3d(0.5, safeY + 1.0, 0.5);
+				// Check if the stored original position is very close to the safe position
+				if (originalPos.squaredDistanceTo(currentSafePos) < 0.1) {
+					loggedOutDuringAuth = true;
+				}
 			}
 
-			// Re-op if they were originally OP
+			if (loggedOutDuringAuth) {
+				LOGGER.info("Player {} logged out during authentication. Restoring to default spawn/gamemode.", playerName);
+				// Restore to default spawn and gamemode
+				ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
+				if (overworld != null) {
+					net.minecraft.util.math.BlockPos spawnPos = overworld.getSpawnPos();
+					int spawnY = overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, spawnPos.getX(), spawnPos.getZ());
+					player.networkHandler.requestTeleport(spawnPos.getX() + 0.5, spawnY, spawnPos.getZ() + 0.5, overworld.getSpawnAngle(), 0.0f);
+					player.changeGameMode(this.serverInstance.getDefaultGameMode());
+					LOGGER.info("Set gamemode to default ({}) for player {}.", this.serverInstance.getDefaultGameMode(), playerName);
+				} else {
+					LOGGER.error("Could not get Overworld to restore player {} to spawn!", playerName);
+					success = false;
+				}
+			} else {
+				// Standard restore logic
+				// Teleport back to original location *before* changing gamemode
+				if (originalPos != null) {
+					// Use requestTeleport for reliability across dimensions/loads
+					// Keep the player's current yaw/pitch from spectator mode
+					player.networkHandler.requestTeleport(originalPos.getX(), originalPos.getY(), originalPos.getZ(), player.getYaw(), player.getPitch()); 
+					LOGGER.info("Teleported player {} back to original location after authentication.", playerName);
+				} else {
+					LOGGER.warn("Could not find original position for UUID {} (Player: {}) during state restoration.", playerUuid, playerName);
+					// Not necessarily a failure of the whole process, maybe they disconnected weirdly before?
+					// Proceed with restoring other states.
+				}
+
+				if (originalMode != null) {
+					player.changeGameMode(originalMode);
+					LOGGER.info("Restored original gamemode ({}) for player {}.", originalMode, playerName);
+				} else {
+					LOGGER.warn("Could not find original gamemode for UUID {} (Player: {}). Setting to default.", playerUuid, playerName);
+					// Fallback to default gamemode if original is missing for some reason
+					if(this.serverInstance != null) player.changeGameMode(this.serverInstance.getDefaultGameMode());
+					success = false;
+				}
+			}
+
+			// Re-op if they were originally OP (applies to both restore paths)
 			if (wasOp != null && wasOp) {
 				// Ensure server instance is available before trying to re-op
 				if (this.serverInstance != null) {
@@ -410,6 +473,7 @@ public class Safeserver implements ModInitializer {
 			// Clean up any remaining state just in case
 			originalGameModes.remove(playerUuid);
 			initialPositions.remove(playerUuid);
+			originalPositionsBeforeAuth.remove(playerUuid); // Ensure cleanup here too
 			originalOpStatus.remove(playerUuid);
 			success = false;
 		}
@@ -471,9 +535,15 @@ public class Safeserver implements ModInitializer {
 			LOGGER.info("Forcing player {} ({}) into authentication state after password reset.", targetPlayer.getName().getString(), targetPlayerUuid);
 			authenticatingPlayers.add(targetPlayerUuid);
 			originalGameModes.put(targetPlayerUuid, targetPlayer.interactionManager.getGameMode());
-			// Store current position as the new initial position
-            Vec3d currentPos = targetPlayer.getPos(); 
-            initialPositions.put(targetPlayerUuid, currentPos);
+			// Store current position as the original position
+            Vec3d originalPos = targetPlayer.getPos(); 
+			originalPositionsBeforeAuth.put(targetPlayerUuid, originalPos);
+			// Define and store safe position for freezing
+            // Calculate safe Y position
+			ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
+			int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
+            Vec3d safePos = new Vec3d(0.5, safeY + 1.0, 0.5); // Centered on block, 1 block above surface
+            initialPositions.put(targetPlayerUuid, safePos);
             // Store current OP status and de-op if needed
             boolean wasOp = this.serverInstance.getPlayerManager().isOperator(targetPlayer.getGameProfile());
 			originalOpStatus.put(targetPlayerUuid, wasOp);
@@ -483,7 +553,8 @@ public class Safeserver implements ModInitializer {
 			}
 
 			targetPlayer.changeGameMode(GameMode.SPECTATOR);
-            targetPlayer.networkHandler.requestTeleport(currentPos.getX(), currentPos.getY() + 0.1, currentPos.getZ(), targetPlayer.getYaw(), targetPlayer.getPitch());
+            // Teleport to safe position
+            targetPlayer.networkHandler.requestTeleport(safePos.getX(), safePos.getY(), safePos.getZ(), 0, 0);
             targetPlayer.sendMessage(Text.literal("Your password has been reset by an administrator."), false);
             targetPlayer.sendMessage(Text.literal("Please set a new password using /setpassword <password> <password>"), false);
 		} else {
