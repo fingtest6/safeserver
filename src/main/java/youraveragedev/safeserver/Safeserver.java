@@ -42,6 +42,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.entity.effect.StatusEffectInstance;
+import net.minecraft.entity.effect.StatusEffects;
 
 public class Safeserver implements ModInitializer {
 	public static final String MOD_ID = "safeserver";
@@ -100,40 +102,44 @@ public class Safeserver implements ModInitializer {
 				LOGGER.info("Temporarily de-opped player {} ({}) for authentication.", playerName, playerUuidString);
 			}
 
+			// Shared logic for applying auth state
+			Runnable applyAuthState = () -> {
+				authenticatingPlayers.add(playerUuid);
+				originalGameModes.put(playerUuid, player.interactionManager.getGameMode());
+				Vec3d originalPos = player.getPos(); // Store original position
+				originalPositionsBeforeAuth.put(playerUuid, originalPos);
+				// Calculate safe position at world spawn
+				ServerWorld overworld = server.getWorld(World.OVERWORLD);
+				Vec3d safePos;
+				if (overworld != null) {
+					net.minecraft.util.math.BlockPos spawnPos = overworld.getSpawnPos();
+					int safeY = overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, spawnPos.getX(), spawnPos.getZ());
+					safePos = new Vec3d(spawnPos.getX() + 0.5, safeY + 1.0, spawnPos.getZ() + 0.5); // Centered on spawn block, 1 block above surface
+				} else {
+					LOGGER.warn("Could not get Overworld to determine spawn point for player {}. Defaulting to 0,65,0", playerName);
+					safePos = new Vec3d(0.5, 65.0, 0.5); // Fallback
+				}
+				initialPositions.put(playerUuid, safePos); // Store safe position for freezing
+				player.changeGameMode(GameMode.SPECTATOR);
+				// Teleport to safe location immediately
+				player.networkHandler.requestTeleport(safePos.getX(), safePos.getY(), safePos.getZ(), 0, 0);
+				// Apply Blindness effect
+				player.addStatusEffect(new StatusEffectInstance(StatusEffects.BLINDNESS, Integer.MAX_VALUE, 0, false, false, true)); // Infinite duration, no particles, show icon
+				LOGGER.info("Applied spectator mode and blindness to {} for authentication.", playerName);
+			};
+
 			if (playerPasswords.containsKey(playerUuidString)) {
 				// Returning player needing login
 				if (!authenticatingPlayers.contains(playerUuid)) { // Avoid re-adding if already processing
 					LOGGER.info("Player {} needs to log in.", playerName);
-					authenticatingPlayers.add(playerUuid);
-					originalGameModes.put(playerUuid, player.interactionManager.getGameMode());
-					Vec3d originalPos = player.getPos(); // Store original position
-					originalPositionsBeforeAuth.put(playerUuid, originalPos);
-					// Calculate safe Y position
-					ServerWorld overworld = server.getWorld(World.OVERWORLD);
-					int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
-					Vec3d safePos = new Vec3d(0.5, safeY + 1.0, 0.5); // Centered on block, 1 block above surface
-					initialPositions.put(playerUuid, safePos); // Store safe position for freezing
-					player.changeGameMode(GameMode.SPECTATOR);
-					// Teleport to safe location immediately
-					player.networkHandler.requestTeleport(safePos.getX(), safePos.getY(), safePos.getZ(), 0, 0);
+					applyAuthState.run(); // Apply the shared auth state logic
 					player.sendMessage(Text.literal("Welcome back! Please login using /login <password>"), false);
 				}
 			} else {
 				// First join, needing password set
 				if (!authenticatingPlayers.contains(playerUuid)) { // Avoid re-adding if already processing
 					LOGGER.info("Player {} needs to set a password.", playerName);
-					authenticatingPlayers.add(playerUuid);
-					originalGameModes.put(playerUuid, player.interactionManager.getGameMode());
-					Vec3d originalPos = player.getPos(); // Store original position
-					originalPositionsBeforeAuth.put(playerUuid, originalPos);
-					// Calculate safe Y position
-					ServerWorld overworld = server.getWorld(World.OVERWORLD);
-					int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
-					Vec3d safePos = new Vec3d(0.5, safeY + 1.0, 0.5); // Centered on block, 1 block above surface
-					initialPositions.put(playerUuid, safePos); // Store safe position for freezing
-					player.changeGameMode(GameMode.SPECTATOR);
-					// Teleport to safe location immediately
-					player.networkHandler.requestTeleport(safePos.getX(), safePos.getY(), safePos.getZ(), 0, 0);
+					applyAuthState.run(); // Apply the shared auth state logic
 					player.sendMessage(Text.literal("Welcome! This server requires authentication."), false);
 					player.sendMessage(Text.literal("Please set your password using /setpassword <password>"), false);
 				}
@@ -144,24 +150,110 @@ public class Safeserver implements ModInitializer {
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
 			ServerPlayerEntity player = handler.player;
 			UUID playerUuid = player.getUuid();
-			// Remove player from auth process and cleanup state
-			if (authenticatingPlayers.remove(playerUuid)) {
+			String playerName = player.getName().getString(); // Get name for logging
+
+			// Check if the player was authenticating WHEN they disconnected
+			if (authenticatingPlayers.contains(playerUuid)) {
+				LOGGER.info("Player {} ({}) disconnecting during authentication. Attempting state restoration before save...", playerName, playerUuid);
+
+				// Retrieve original state BEFORE removing it from maps
+				GameMode originalMode = originalGameModes.get(playerUuid);
+				Vec3d originalPos = originalPositionsBeforeAuth.get(playerUuid);
+				Boolean wasOp = originalOpStatus.get(playerUuid);
+
+				// --- Attempt immediate restoration ---
+				// This happens before the server saves the player's final state.
+				boolean restoredSomething = false;
+				try {
+					// 1. Teleport back to original position (use network handler for reliability)
+					if (originalPos != null) {
+						// Use requestTeleport - this updates server state and notifies client
+						player.networkHandler.requestTeleport(originalPos.getX(), originalPos.getY(), originalPos.getZ(), player.getYaw(), player.getPitch());
+						LOGGER.info("Requested teleport for {} back to {} before disconnect save.", playerName, originalPos);
+						restoredSomething = true;
+					} else {
+						LOGGER.warn("No original position found for {} during disconnect restoration.", playerName);
+					}
+
+					// 2. Restore original gamemode
+					GameMode modeToRestore = null;
+					if (originalMode != null) {
+						if (originalMode != GameMode.SPECTATOR) {
+							// If the original stored mode wasn't spectator, restore it
+							modeToRestore = originalMode;
+						} else {
+							// If the original stored mode was spectator (unlikely unless they joined in it),
+							// restore to server default, consistent with successful auth restoration.
+							modeToRestore = server.getDefaultGameMode();
+							LOGGER.info("Original gamemode was SPECTATOR for {}, restoring to server default ({}) before disconnect save.", playerName, modeToRestore);
+						}
+					} else {
+						LOGGER.warn("No original gamemode found for {} during disconnect restoration.", playerName);
+					}
+
+					if (modeToRestore != null && player.interactionManager.getGameMode() != modeToRestore) {
+						player.changeGameMode(modeToRestore);
+						LOGGER.info("Restored gamemode for {} to {} before disconnect save.", playerName, modeToRestore);
+						restoredSomething = true;
+					}
+
+					// 3. Remove Blindness effect (if present)
+					if (player.hasStatusEffect(StatusEffects.BLINDNESS)) {
+						player.removeStatusEffect(StatusEffects.BLINDNESS);
+						LOGGER.info("Removed blindness from {} before disconnect save.", playerName);
+						restoredSomething = true; // Consider this a restoration action
+					}
+
+					// 4. Restore OP status (only if they were OP originally)
+					if (wasOp != null && wasOp) {
+						// Check if they are NOT currently OP before adding back
+						if (!server.getPlayerManager().isOperator(player.getGameProfile())) {
+							server.getPlayerManager().addToOperators(player.getGameProfile());
+							LOGGER.info("Restored OP status for {} before disconnect save.", playerName);
+							restoredSomething = true;
+						}
+					} else if (wasOp != null && !wasOp) {
+						// If they were NOT originally OP, ensure they are de-opped now (redundant with later check, but safe)
+						if (server.getPlayerManager().isOperator(player.getGameProfile())) {
+							server.getPlayerManager().removeFromOperators(player.getGameProfile());
+							LOGGER.info("Ensured {} is not OP before disconnect save (was not OP originally).", playerName);
+						}
+					}
+					// If wasOp is null, log a warning but don't change OP status.
+					else if (wasOp == null) {
+                         LOGGER.warn("Original OP status was unexpectedly null for {} during disconnect restoration.", playerName);
+                    }
+
+
+				} catch (Exception e) {
+					LOGGER.error("Error attempting immediate state restoration for {} during disconnect: {}", playerName, e.getMessage(), e);
+				}
+				// --- End immediate restoration ---
+
+				// Now, perform the cleanup of the mod's tracking state AFTER attempting restoration
+				authenticatingPlayers.remove(playerUuid);
 				originalGameModes.remove(playerUuid);
 				initialPositions.remove(playerUuid); // Remove safe freeze position
 				originalPositionsBeforeAuth.remove(playerUuid); // Remove original position
 				originalOpStatus.remove(playerUuid);
-				LOGGER.info("Player {} ({}) disconnected during authentication. Cleaned up state.", player.getName().getString(), playerUuid);
+				if (restoredSomething) {
+					LOGGER.info("Cleaned up authentication state for {} after attempting pre-disconnect restoration.", playerName);
+				} else {
+					LOGGER.warn("Cleaned up authentication state for {} (pre-disconnect restoration may not have completed fully).", playerName);
+				}
+
+			} else {
+				// Player was not authenticating, just disconnected normally.
+				// Still remove OP status tracking if they disconnect while logged in.
+				originalOpStatus.remove(playerUuid);
 			}
 
-			// De-op player on disconnect as a safety measure if they were OP
-			// Note: Check the stored status *before* removing it, but act after removal from auth set if applicable
-			// We check the actual server state at disconnect time
-			if (this.serverInstance != null && this.serverInstance.getPlayerManager().isOperator(player.getGameProfile())) {
-				this.serverInstance.getPlayerManager().removeFromOperators(player.getGameProfile());
-				LOGGER.info("De-opped player {} ({}) on disconnect for security.", player.getName().getString(), playerUuid);
+			// General safety de-op: De-op player on disconnect if they are currently OP,
+			// regardless of auth state. This happens AFTER potential restoration attempts.
+			if (server.getPlayerManager().isOperator(player.getGameProfile())) {
+				server.getPlayerManager().removeFromOperators(player.getGameProfile());
+				LOGGER.info("De-opped player {} ({}) on disconnect for security.", playerName, playerUuid);
 			}
-			// Remove OP status tracking if they disconnect while *not* authenticating (already logged in)
-			originalOpStatus.remove(playerUuid);
 		});
 
 		// Register Commands
@@ -398,57 +490,78 @@ public class Safeserver implements ModInitializer {
 		if (player != null) {
 			String playerName = player.getName().getString();
 
-			// --- Bug Fix: Check if player logged out during authentication --- 
-			boolean loggedOutDuringAuth = false;
-			if (originalMode == GameMode.SPECTATOR && originalPos != null && this.serverInstance != null) {
-				// Calculate what the safe position would be right now
-				ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
-				int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
-				Vec3d currentSafePos = new Vec3d(0.5, safeY + 1.0, 0.5);
-				// Check if the stored original position is very close to the safe position
-				if (originalPos.squaredDistanceTo(currentSafePos) < 0.1) {
-					loggedOutDuringAuth = true;
-				}
-			}
+			// --- Bug Fix: Removed faulty loggedOutDuringAuth check ---
+            // The previous check comparing originalPos to currentSafePos was unreliable.
+            // We will now handle potential spectator restoration directly below.
 
-			if (loggedOutDuringAuth) {
-				LOGGER.info("Player {} logged out during authentication. Restoring to default spawn/gamemode.", playerName);
-				// Restore to default spawn and gamemode
-				ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
-				if (overworld != null) {
-					net.minecraft.util.math.BlockPos spawnPos = overworld.getSpawnPos();
-					int spawnY = overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, spawnPos.getX(), spawnPos.getZ());
-					player.networkHandler.requestTeleport(spawnPos.getX() + 0.5, spawnY, spawnPos.getZ() + 0.5, overworld.getSpawnAngle(), 0.0f);
-					player.changeGameMode(this.serverInstance.getDefaultGameMode());
-					LOGGER.info("Set gamemode to default ({}) for player {}.", this.serverInstance.getDefaultGameMode(), playerName);
-				} else {
-					LOGGER.error("Could not get Overworld to restore player {} to spawn!", playerName);
-					success = false;
-				}
-			} else {
-				// Standard restore logic
-				// Teleport back to original location *before* changing gamemode
-				if (originalPos != null) {
-					// Use requestTeleport for reliability across dimensions/loads
-					// Keep the player's current yaw/pitch from spectator mode
-					player.networkHandler.requestTeleport(originalPos.getX(), originalPos.getY(), originalPos.getZ(), player.getYaw(), player.getPitch()); 
-					LOGGER.info("Teleported player {} back to original location after authentication.", playerName);
-				} else {
-					LOGGER.warn("Could not find original position for UUID {} (Player: {}) during state restoration.", playerUuid, playerName);
-					// Not necessarily a failure of the whole process, maybe they disconnected weirdly before?
-					// Proceed with restoring other states.
-				}
+            // Standard restore logic
+            // Teleport back to original location *before* changing gamemode
+            if (originalPos != null) {
+                // Use requestTeleport for reliability across dimensions/loads
+                // Keep the player's current yaw/pitch from spectator mode
+                player.networkHandler.requestTeleport(originalPos.getX(), originalPos.getY(), originalPos.getZ(), player.getYaw(), player.getPitch());
+                LOGGER.info("Teleported player {} back to original location after authentication.", playerName);
+            } else {
+                LOGGER.warn("Could not find original position for UUID {} (Player: {}) during state restoration. Restoring to spawn.", playerUuid, playerName);
+                // Fallback: Teleport to world spawn if original position is missing
+                if (this.serverInstance != null) {
+                    ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
+                    if (overworld != null) {
+                        net.minecraft.util.math.BlockPos spawnPos = overworld.getSpawnPos();
+                        int spawnY = overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, spawnPos.getX(), spawnPos.getZ());
+                        player.networkHandler.requestTeleport(spawnPos.getX() + 0.5, spawnY, spawnPos.getZ() + 0.5, overworld.getSpawnAngle(), 0.0f);
+                    } else {
+                         LOGGER.error("Could not get Overworld to restore player {} to spawn!", playerName);
+                         success = false;
+                    }
+                } else {
+                    LOGGER.error("Could not get server instance to restore player {} to spawn!", playerName);
+                    success = false;
+                }
+            }
 
-				if (originalMode != null) {
-					player.changeGameMode(originalMode);
-					LOGGER.info("Restored original gamemode ({}) for player {}.", originalMode, playerName);
-				} else {
-					LOGGER.warn("Could not find original gamemode for UUID {} (Player: {}). Setting to default.", playerUuid, playerName);
-					// Fallback to default gamemode if original is missing for some reason
-					if(this.serverInstance != null) player.changeGameMode(this.serverInstance.getDefaultGameMode());
-					success = false;
-				}
-			}
+            // Determine the correct gamemode to restore
+            GameMode modeToRestore = null;
+            if (originalMode != null) {
+                if (originalMode == GameMode.SPECTATOR) {
+                    // If the stored mode was spectator, it's likely from the auth process itself.
+                    // Restore to server default instead.
+                    if (this.serverInstance != null) {
+                        modeToRestore = this.serverInstance.getDefaultGameMode();
+                        LOGGER.info("Original gamemode was SPECTATOR, restoring to server default ({}) for player {}.", modeToRestore, playerName);
+                    } else {
+                        LOGGER.error("Could not get server instance to determine default gamemode for player {}. Restoration may fail.", playerName);
+                        success = false;
+                        // Leave modeToRestore as null, gamemode won't be changed.
+                    }
+                } else {
+                    // Restore the actual original gamemode
+                    modeToRestore = originalMode;
+                    LOGGER.info("Restored original gamemode ({}) for player {}.", modeToRestore, playerName);
+                }
+            } else {
+                LOGGER.warn("Could not find original gamemode for UUID {} (Player: {}). Setting to default.", playerUuid, playerName);
+                // Fallback to default gamemode if original is missing
+                if (this.serverInstance != null) {
+                    modeToRestore = this.serverInstance.getDefaultGameMode();
+                } else {
+                    LOGGER.error("Could not get server instance to determine default gamemode for player {}. Restoration may fail.", playerName);
+                    success = false;
+                    // Leave modeToRestore as null, gamemode won't be changed.
+                }
+            }
+
+            // Apply the determined gamemode
+            if (modeToRestore != null) {
+                player.changeGameMode(modeToRestore);
+            }
+
+            // Remove Blindness effect
+            if (player.hasStatusEffect(StatusEffects.BLINDNESS)) {
+                 player.removeStatusEffect(StatusEffects.BLINDNESS);
+                 LOGGER.info("Removed blindness from player {} after authentication.", playerName);
+            }
+
 
 			// Re-op if they were originally OP (applies to both restore paths)
 			if (wasOp != null && wasOp) {
@@ -538,11 +651,17 @@ public class Safeserver implements ModInitializer {
 			// Store current position as the original position
             Vec3d originalPos = targetPlayer.getPos(); 
 			originalPositionsBeforeAuth.put(targetPlayerUuid, originalPos);
-			// Define and store safe position for freezing
-            // Calculate safe Y position
-			ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
-			int safeY = (overworld != null) ? overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, 0, 0) : 64;
-            Vec3d safePos = new Vec3d(0.5, safeY + 1.0, 0.5); // Centered on block, 1 block above surface
+			// Define and store safe position at world spawn for freezing
+            ServerWorld overworld = this.serverInstance.getWorld(World.OVERWORLD);
+            Vec3d safePos;
+             if (overworld != null) {
+                net.minecraft.util.math.BlockPos spawnPos = overworld.getSpawnPos();
+                int safeY = overworld.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, spawnPos.getX(), spawnPos.getZ());
+                safePos = new Vec3d(spawnPos.getX() + 0.5, safeY + 1.0, spawnPos.getZ() + 0.5); // Centered on spawn block, 1 block above surface
+            } else {
+                LOGGER.warn("Could not get Overworld to determine spawn point for player {} during password reset. Defaulting to 0,65,0", targetPlayer.getName().getString());
+                safePos = new Vec3d(0.5, 65.0, 0.5); // Fallback
+            }
             initialPositions.put(targetPlayerUuid, safePos);
             // Store current OP status and de-op if needed
             boolean wasOp = this.serverInstance.getPlayerManager().isOperator(targetPlayer.getGameProfile());
