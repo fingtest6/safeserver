@@ -42,16 +42,6 @@ public class AuthCommands {
         UUID playerUuid = player.getUuid();
         String playerName = player.getName().getString();
 
-        if (!modInstance.isPlayerAuthenticating(playerUuid)) {
-            source.sendError(Text.literal("You are already authenticated or not required to set a password now."));
-            return 0;
-        }
-
-        if (modInstance.hasPassword(playerUuid)) {
-            source.sendError(Text.literal("You already have a password set. Use /login instead."));
-            return 0;
-        }
-
         // Check if passwords match
         if (!password.equals(confirmPassword)) {
             source.sendError(Text.literal("Passwords do not match. Please try again."));
@@ -64,14 +54,41 @@ public class AuthCommands {
             return 0;
         }
 
-        boolean success = modInstance.registerPlayer(playerUuid, password);
-        if (success) {
-            source.sendFeedback(() -> Text.literal("Password set successfully! You are now logged in."), false);
-            Safeserver.LOGGER.info("Player {} set their password and is now authenticated.", playerName);
-            return 1;
+        // Handle different scenarios:
+        boolean isAuthenticating = modInstance.isPlayerAuthenticating(playerUuid);
+        boolean hasPassword = modInstance.hasPassword(playerUuid);
+
+        if (isAuthenticating && !hasPassword) {
+            // First-time password setting (original behavior)
+            boolean success = modInstance.registerPlayer(playerUuid, password);
+            if (success) {
+                source.sendFeedback(() -> Text.literal("Password set successfully! You are now logged in."), false);
+                Safeserver.LOGGER.info("Player {} set their password and is now authenticated.", playerName);
+                return 1;
+            } else {
+                source.sendError(Text.literal("Failed to set password. Please contact an admin."));
+                Safeserver.LOGGER.error("Failed to set password for player {}.", playerName);
+                return 0;
+            }
+        } else if (!isAuthenticating && hasPassword) {
+            // Authenticated user resetting their password
+            boolean success = modInstance.resetAndSetPassword(playerUuid, password);
+            if (success) {
+                source.sendFeedback(() -> Text.literal("Password reset successfully!"), false);
+                Safeserver.LOGGER.info("Player {} reset their password.", playerName);
+                return 1;
+            } else {
+                source.sendError(Text.literal("Failed to reset password. Please contact an admin."));
+                Safeserver.LOGGER.error("Failed to reset password for player {}.", playerName);
+                return 0;
+            }
+        } else if (isAuthenticating && hasPassword) {
+            // Player is authenticating but already has a password - should use login
+            source.sendError(Text.literal("You already have a password set. Use /login instead."));
+            return 0;
         } else {
-            source.sendError(Text.literal("Failed to set password. Please contact an admin."));
-            Safeserver.LOGGER.error("Failed to set password for player {}.");
+            // Player is not authenticating and has no password - shouldn't happen normally
+            source.sendError(Text.literal("You don't need to set a password right now."));
             return 0;
         }
     }

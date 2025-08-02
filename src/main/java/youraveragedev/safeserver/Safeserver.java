@@ -630,6 +630,32 @@ public class Safeserver implements ModInitializer {
 	}
 
 	/**
+	 * Resets and sets a new password for an authenticated player.
+	 * This allows logged-in players to use /setpassword to reset their password.
+	 */
+	public boolean resetAndSetPassword(UUID playerUuid, String newPassword) {
+		if (isPlayerAuthenticating(playerUuid)) {
+			LOGGER.warn("Attempt to reset password while player {} is still authenticating.", playerUuid);
+			return false; // Should not reset password while authenticating
+		}
+		if (!hasPassword(playerUuid)) {
+			LOGGER.warn("Attempt to reset password for player {} who has no password set.", playerUuid);
+			return false; // Should have a password to reset it
+		}
+
+		String newPasswordHash = hashPassword(newPassword);
+		if ("HASHING_ERROR".equals(newPasswordHash)) {
+			LOGGER.error("Could not reset password for player {} due to hashing error.", playerUuid);
+			return false;
+		}
+
+		playerPasswords.put(playerUuid.toString(), newPasswordHash);
+		savePasswords();
+		LOGGER.info("Player {} successfully reset their password using setpassword command.", playerUuid);
+		return true;
+	}
+
+	/**
 	 * Resets the password for a target player (removes their entry).
 	 * This forces them to set a new password on next join.
 	 */
