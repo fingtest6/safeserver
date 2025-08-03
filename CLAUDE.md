@@ -4,78 +4,75 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Safeserver is a Minecraft Fabric mod that adds mandatory password authentication to servers. Players must set a password on first join and authenticate on subsequent joins. The mod enforces strict interaction blocking until authentication is complete.
+This is a Minecraft Fabric mod called "Safeserver" that adds mandatory password authentication to Minecraft servers. It's built using Java 21 and Fabric API, targeting Minecraft 1.21.8.
 
 ## Development Commands
 
-### Building and Testing
-- `./gradlew build` - Build the mod (assembles and tests)
-- `./gradlew assemble` - Assemble the mod JAR without running tests
-- `./gradlew clean` - Clean build artifacts
-- `./gradlew test` - Run the test suite
-- `./gradlew check` - Run all verification tasks
+### Build and Development
+- `./gradlew build` - Build the mod JAR file
+- `./gradlew publishToMavenLocal` - Publish to local Maven repository
+- `./gradlew runServer` - Run the mod in a server environment for testing
+- `./gradlew runClient` - Run the mod in a client environment for testing
 
-### Development and Testing
-- `./gradlew runServer` - Start development server
-- `./gradlew runClient` - Start development client
-- `./gradlew runDatagen` - Run data generation
-- `./gradlew jar` - Build the mod JAR
-- `./gradlew remapJar` - Remap the built JAR to intermediary mappings
+### Project Structure
+- `src/main/java/` - Main mod source code
+- `src/client/java/` - Client-side specific code
+- `src/main/resources/` - Resources including mod metadata and mixin configurations
+- `build.gradle` - Main build configuration
+- `gradle.properties` - Version information and dependencies
+- `run/` - Server runtime directory with world data and configuration
 
-### IDE Setup
-- `./gradlew genEclipseRuns` - Generate Eclipse run configurations
-- `./gradlew vscode` - Generate VSCode launch configurations
-
-## Architecture
+## Code Architecture
 
 ### Core Components
 
-**Main Class**: `youraveragedev.safeserver.Safeserver`
-- Implements `ModInitializer` 
-- Manages player authentication state using UUID-based tracking
-- Handles player join/disconnect events with position and gamemode restoration
-- Integrates with Fabric API events for interaction blocking
+1. **Main Mod Class (`Safeserver.java`)**
+   - Entry point implementing `ModInitializer`
+   - Manages player authentication state and password storage
+   - Handles player join/disconnect events
+   - Implements gameplay blocking for unauthenticated players
+   - Uses SHA-256 for password hashing with JSON file persistence
 
-**Authentication System**:
-- Password storage in `config/safeserver/passwords.json` (SHA-256 hashed)
-- State tracking maps: `authenticatingPlayers`, `originalGameModes`, `originalPositions`, `originalOpStatus`
-- Position freezing at world spawn with spectator mode during authentication
-- Automatic OP status management (temporary removal during auth)
+2. **Authentication Commands (`AuthCommands.java`)**
+   - `/setpassword <password> <password>` - First-time password setting
+   - `/login <password>` - Player authentication
+   - `/changepassword <old> <new> <new>` - Change existing password
+   - `/resetpassword <player>` - Admin command to reset player passwords (OP level 2+)
 
-**Command System**: `youraveragedev.safeserver.command.AuthCommands`
-- `/setpassword <password> <password>` - First-time password setting
-- `/login <password>` - Subsequent authentication
-- `/changepassword <old> <new> <new>` - Change existing password
-- `/resetpassword <player>` - OP-only password reset
+3. **Player State Management**
+   - Places authenticating players in Spectator mode at spawn with blindness effect
+   - Blocks all interactions (block breaking/placing, item use, entity interaction)
+   - Restricts commands to only authentication-related ones
+   - Freezes player position until authenticated
+   - Preserves original gamemode, position, and OP status for restoration
 
-### Security Features
+4. **Security Features**
+   - Temporarily removes OP status during authentication
+   - Prevents coordinate leakage by teleporting to safe spawn location
+   - Stores passwords as SHA-256 hashes in `config/safeserver/passwords.json`
+   - Validates password length (minimum 4 characters)
 
-- **Position Protection**: Players teleported to safe spawn location during auth, preventing coordinate leakage
-- **Interaction Blocking**: All world interactions disabled until authentication (block breaking/placing, item use, entity interaction)
-- **Command Restriction**: Only auth commands allowed during authentication process
-- **Visual Blocking**: Blindness effect applied during authentication
-- **State Restoration**: Complete restoration of original position, gamemode, and OP status after auth
+### Key Data Structures
+- `authenticatingPlayers` - Set of UUIDs currently requiring authentication
+- `playerPasswords` - Map of UUID strings to hashed passwords
+- `originalGameModes` - Preserves player gamemode before authentication
+- `originalPositionsBeforeAuth` - Stores player position before teleport to spawn
+- `initialPositions` - Safe spawn position for position freezing
+- `originalOpStatus` - Tracks original OP status for restoration
 
-### File Structure
+### Event Handling
+- Uses Fabric API event callbacks for player lifecycle and interaction blocking
+- Server tick events for position enforcement
+- Command registration through Fabric command API
 
-```
-src/main/java/youraveragedev/safeserver/
-├── Safeserver.java              # Main mod class and authentication logic
-└── command/
-    └── AuthCommands.java        # Command registration and handlers
+## Development Notes
 
-src/main/resources/
-├── fabric.mod.json             # Mod metadata
-└── safeserver.mixins.json      # Mixin configuration
-```
+- This is a security-focused mod for defensive purposes only
+- Java 21 source/target compatibility
+- Uses Fabric Loom for Minecraft mod development
+- Mixin framework for runtime code injection (currently has example mixin only)
+- Configuration stored in `run/config/safeserver/passwords.json`
 
-### Key Technical Details
+## Testing
 
-- **Fabric Version**: 1.21.4 (check `gradle.properties` for current versions)
-- **Java Version**: 21 (required)
-- **Password Security**: SHA-256 hashing with secure storage
-- **Event Handling**: Uses Fabric API callbacks for player events and interaction blocking
-- **State Management**: Comprehensive tracking of player state during authentication process
-- **Position Handling**: Uses `requestTeleport()` for reliable cross-dimensional teleportation
-
-When modifying authentication logic, ensure proper cleanup of all tracking maps and consider both online and offline player scenarios for password reset functionality.
+Run the server with `./gradlew runServer` to test authentication flow. The mod automatically creates necessary directories and configuration files on first run.

@@ -8,6 +8,7 @@ import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import youraveragedev.safeserver.Safeserver;
+import youraveragedev.safeserver.SafeserverConstants;
 
 import java.util.UUID;
 
@@ -35,7 +36,7 @@ public class AuthCommands {
     private static int runSetPasswordCommand(ServerCommandSource source, String password, String confirmPassword, Safeserver modInstance) {
         ServerPlayerEntity player = source.getPlayer();
         if (player == null) {
-            source.sendError(Text.literal("This command can only be run by a player."));
+            source.sendError(Text.literal(SafeserverConstants.PLAYER_ONLY_COMMAND_ERROR));
             return 0;
         }
 
@@ -44,13 +45,13 @@ public class AuthCommands {
 
         // Check if passwords match
         if (!password.equals(confirmPassword)) {
-            source.sendError(Text.literal("Passwords do not match. Please try again."));
+            source.sendError(Text.literal(SafeserverConstants.PASSWORD_MISMATCH_ERROR));
             return 0;
         }
 
-        // Basic password policy (e.g., minimum length)
-        if (password.length() < 4) { // Example: require at least 4 characters
-            source.sendError(Text.literal("Password must be at least 4 characters long."));
+        // Basic password policy
+        if (password.length() < SafeserverConstants.MIN_PASSWORD_LENGTH) {
+            source.sendError(Text.literal(SafeserverConstants.PASSWORD_LENGTH_ERROR));
             return 0;
         }
 
@@ -62,11 +63,11 @@ public class AuthCommands {
             // First-time password setting (original behavior)
             boolean success = modInstance.registerPlayer(playerUuid, password);
             if (success) {
-                source.sendFeedback(() -> Text.literal("Password set successfully! You are now logged in."), false);
+                source.sendFeedback(() -> Text.literal(SafeserverConstants.PASSWORD_SET_SUCCESS), false);
                 Safeserver.LOGGER.info("Player {} set their password and is now authenticated.", playerName);
                 return 1;
             } else {
-                source.sendError(Text.literal("Failed to set password. Please contact an admin."));
+                source.sendError(Text.literal("Failed to set password. " + SafeserverConstants.CONTACT_ADMIN_ERROR));
                 Safeserver.LOGGER.error("Failed to set password for player {}.", playerName);
                 return 0;
             }
@@ -74,21 +75,21 @@ public class AuthCommands {
             // Authenticated user resetting their password
             boolean success = modInstance.resetAndSetPassword(playerUuid, password);
             if (success) {
-                source.sendFeedback(() -> Text.literal("Password reset successfully!"), false);
+                source.sendFeedback(() -> Text.literal(SafeserverConstants.PASSWORD_RESET_SUCCESS), false);
                 Safeserver.LOGGER.info("Player {} reset their password.", playerName);
                 return 1;
             } else {
-                source.sendError(Text.literal("Failed to reset password. Please contact an admin."));
+                source.sendError(Text.literal("Failed to reset password. " + SafeserverConstants.CONTACT_ADMIN_ERROR));
                 Safeserver.LOGGER.error("Failed to reset password for player {}.", playerName);
                 return 0;
             }
         } else if (isAuthenticating && hasPassword) {
             // Player is authenticating but already has a password - should use login
-            source.sendError(Text.literal("You already have a password set. Use /login instead."));
+            source.sendError(Text.literal(SafeserverConstants.ALREADY_HAS_PASSWORD_ERROR));
             return 0;
         } else {
             // Player is not authenticating and has no password - shouldn't happen normally
-            source.sendError(Text.literal("You don't need to set a password right now."));
+            source.sendError(Text.literal(SafeserverConstants.NO_PASSWORD_NEEDED_ERROR));
             return 0;
         }
     }
@@ -96,7 +97,7 @@ public class AuthCommands {
     private static int runLoginCommand(ServerCommandSource source, String password, Safeserver modInstance) {
         ServerPlayerEntity player = source.getPlayer();
         if (player == null) {
-            source.sendError(Text.literal("This command can only be run by a player."));
+            source.sendError(Text.literal(SafeserverConstants.PLAYER_ONLY_COMMAND_ERROR));
             return 0;
         }
 
@@ -104,23 +105,23 @@ public class AuthCommands {
         String playerName = player.getName().getString();
 
         if (!modInstance.isPlayerAuthenticating(playerUuid)) {
-            source.sendError(Text.literal("You are already authenticated or not required to log in now."));
+            source.sendError(Text.literal(SafeserverConstants.ALREADY_AUTHENTICATED_ERROR));
             return 0;
         }
 
         if (!modInstance.hasPassword(playerUuid)) {
-            source.sendError(Text.literal("You don't have a password set yet. Use /setpassword first."));
+            source.sendError(Text.literal(SafeserverConstants.NO_PASSWORD_SET_ERROR));
             return 0;
         }
 
         boolean success = modInstance.authenticatePlayer(playerUuid, password);
         if (success) {
-            source.sendFeedback(() -> Text.literal("Login successful!"), false);
+            source.sendFeedback(() -> Text.literal(SafeserverConstants.LOGIN_SUCCESS), false);
             Safeserver.LOGGER.info("Player {} successfully authenticated.", playerName);
             return 1;
         } else {
-            source.sendError(Text.literal("Incorrect password."));
-            Safeserver.LOGGER.warn("Failed login attempt for player {}.");
+            source.sendError(Text.literal(SafeserverConstants.INCORRECT_PASSWORD_ERROR));
+            Safeserver.LOGGER.warn("Failed login attempt for player {}.", playerName);
             return 0;
         }
     }
@@ -152,7 +153,7 @@ public class AuthCommands {
     private static int runChangePasswordCommand(ServerCommandSource source, String oldPassword, String newPassword, String confirmNewPassword, Safeserver modInstance) {
         ServerPlayerEntity player = source.getPlayer();
         if (player == null) {
-            source.sendError(Text.literal("This command can only be run by a player."));
+            source.sendError(Text.literal(SafeserverConstants.PLAYER_ONLY_COMMAND_ERROR));
             return 0;
         }
 
@@ -160,19 +161,19 @@ public class AuthCommands {
 
         // Ensure player is actually logged in (not authenticating)
         if (modInstance.isPlayerAuthenticating(playerUuid)) {
-            source.sendError(Text.literal("You must be logged in to change your password."));
+            source.sendError(Text.literal(SafeserverConstants.MUST_BE_LOGGED_IN_ERROR));
             return 0;
         }
 
         // Check if new passwords match
         if (!newPassword.equals(confirmNewPassword)) {
-            source.sendError(Text.literal("New passwords do not match. Please try again."));
+            source.sendError(Text.literal(SafeserverConstants.PASSWORD_MISMATCH_ERROR));
             return 0;
         }
 
         // Basic password policy
-        if (newPassword.length() < 4) {
-            source.sendError(Text.literal("New password must be at least 4 characters long."));
+        if (newPassword.length() < SafeserverConstants.MIN_PASSWORD_LENGTH) {
+            source.sendError(Text.literal(SafeserverConstants.PASSWORD_LENGTH_ERROR));
             return 0;
         }
 
@@ -180,11 +181,11 @@ public class AuthCommands {
         boolean success = modInstance.changePlayerPassword(playerUuid, oldPassword, newPassword);
 
         if (success) {
-            source.sendFeedback(() -> Text.literal("Password changed successfully."), false);
+            source.sendFeedback(() -> Text.literal(SafeserverConstants.PASSWORD_CHANGE_SUCCESS), false);
             Safeserver.LOGGER.info("Player {} changed their password.", player.getName().getString());
             return 1;
         } else {
-            source.sendError(Text.literal("Failed to change password. Check your old password."));
+            source.sendError(Text.literal(SafeserverConstants.CHECK_OLD_PASSWORD_ERROR));
             Safeserver.LOGGER.warn("Failed password change attempt for player {}.", player.getName().getString());
             return 0;
         }
