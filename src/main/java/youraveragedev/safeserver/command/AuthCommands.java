@@ -43,52 +43,51 @@ public class AuthCommands {
         UUID playerUuid = player.getUuid();
         String playerName = player.getName().getString();
 
-        // Check if passwords match
+        // 检查两次密码是否一致
         if (!password.equals(confirmPassword)) {
             source.sendError(Text.literal(SafeserverConstants.PASSWORD_MISMATCH_ERROR));
             return 0;
         }
 
-        // Basic password policy
+        // 检查密码长度
         if (password.length() < SafeserverConstants.MIN_PASSWORD_LENGTH) {
             source.sendError(Text.literal(SafeserverConstants.PASSWORD_LENGTH_ERROR));
             return 0;
         }
 
-        // Handle different scenarios:
         boolean isAuthenticating = modInstance.isPlayerAuthenticating(playerUuid);
         boolean hasPassword = modInstance.hasPassword(playerUuid);
 
         if (isAuthenticating && !hasPassword) {
-            // First-time password setting (original behavior)
+            // 首次设置密码
             boolean success = modInstance.registerPlayer(playerUuid, password);
             if (success) {
                 source.sendFeedback(() -> Text.literal(SafeserverConstants.PASSWORD_SET_SUCCESS), false);
-                Safeserver.LOGGER.info("Player {} set their password and is now authenticated.", playerName);
+                Safeserver.LOGGER.info("玩家 {} 设置了密码并完成认证。", playerName);
                 return 1;
             } else {
-                source.sendError(Text.literal("Failed to set password. " + SafeserverConstants.CONTACT_ADMIN_ERROR));
-                Safeserver.LOGGER.error("Failed to set password for player {}.", playerName);
+                source.sendError(Text.literal("设置密码失败。" + SafeserverConstants.CONTACT_ADMIN_ERROR));
+                Safeserver.LOGGER.error("为玩家 {} 设置密码失败。", playerName);
                 return 0;
             }
         } else if (!isAuthenticating && hasPassword) {
-            // Authenticated user resetting their password
+            // 已认证用户重置密码
             boolean success = modInstance.resetAndSetPassword(playerUuid, password);
             if (success) {
                 source.sendFeedback(() -> Text.literal(SafeserverConstants.PASSWORD_RESET_SUCCESS), false);
-                Safeserver.LOGGER.info("Player {} reset their password.", playerName);
+                Safeserver.LOGGER.info("玩家 {} 重置了密码。", playerName);
                 return 1;
             } else {
-                source.sendError(Text.literal("Failed to reset password. " + SafeserverConstants.CONTACT_ADMIN_ERROR));
-                Safeserver.LOGGER.error("Failed to reset password for player {}.", playerName);
+                source.sendError(Text.literal("重置密码失败。" + SafeserverConstants.CONTACT_ADMIN_ERROR));
+                Safeserver.LOGGER.error("为玩家 {} 重置密码失败。", playerName);
                 return 0;
             }
         } else if (isAuthenticating && hasPassword) {
-            // Player is authenticating but already has a password - should use login
+            // 正在认证但已有密码，应使用登录
             source.sendError(Text.literal(SafeserverConstants.ALREADY_HAS_PASSWORD_ERROR));
             return 0;
         } else {
-            // Player is not authenticating and has no password - shouldn't happen normally
+            // 不在认证流程中且无密码（异常情况）
             source.sendError(Text.literal(SafeserverConstants.NO_PASSWORD_NEEDED_ERROR));
             return 0;
         }
@@ -117,17 +116,17 @@ public class AuthCommands {
         boolean success = modInstance.authenticatePlayer(playerUuid, password);
         if (success) {
             source.sendFeedback(() -> Text.literal(SafeserverConstants.LOGIN_SUCCESS), false);
-            Safeserver.LOGGER.info("Player {} successfully authenticated.", playerName);
+            Safeserver.LOGGER.info("玩家 {} 成功登录。", playerName);
             return 1;
         } else {
             source.sendError(Text.literal(SafeserverConstants.INCORRECT_PASSWORD_ERROR));
-            Safeserver.LOGGER.warn("Failed login attempt for player {}.", playerName);
+            Safeserver.LOGGER.warn("玩家 {} 登录失败（密码错误）。", playerName);
             return 0;
         }
     }
 
     private static void registerNewCommands(CommandDispatcher<ServerCommandSource> dispatcher, Safeserver modInstance) {
-        // Command for changing own password
+        // 玩家修改自己的密码
         dispatcher.register(CommandManager.literal("changepassword")
                 .requires(source -> source.getEntity() instanceof ServerPlayerEntity)
                 .then(CommandManager.argument("oldPassword", StringArgumentType.string())
@@ -140,9 +139,9 @@ public class AuthCommands {
                                                 StringArgumentType.getString(context, "confirmNewPassword"),
                                                 modInstance))))));
 
-        // Command for OPs to reset another player's password
+        // OP 重置他人密码
         dispatcher.register(CommandManager.literal("resetpassword")
-                .requires(source -> source.hasPermissionLevel(2)) // Require OP level 2 (configurable)
+                .requires(source -> source.hasPermissionLevel(2))
                 .then(CommandManager.argument("targetPlayer", EntityArgumentType.player())
                         .executes(context -> runResetPasswordCommand(
                                 context.getSource(),
@@ -159,34 +158,30 @@ public class AuthCommands {
 
         UUID playerUuid = player.getUuid();
 
-        // Ensure player is actually logged in (not authenticating)
         if (modInstance.isPlayerAuthenticating(playerUuid)) {
             source.sendError(Text.literal(SafeserverConstants.MUST_BE_LOGGED_IN_ERROR));
             return 0;
         }
 
-        // Check if new passwords match
         if (!newPassword.equals(confirmNewPassword)) {
             source.sendError(Text.literal(SafeserverConstants.PASSWORD_MISMATCH_ERROR));
             return 0;
         }
 
-        // Basic password policy
         if (newPassword.length() < SafeserverConstants.MIN_PASSWORD_LENGTH) {
             source.sendError(Text.literal(SafeserverConstants.PASSWORD_LENGTH_ERROR));
             return 0;
         }
 
-        // Attempt to change password
         boolean success = modInstance.changePlayerPassword(playerUuid, oldPassword, newPassword);
 
         if (success) {
             source.sendFeedback(() -> Text.literal(SafeserverConstants.PASSWORD_CHANGE_SUCCESS), false);
-            Safeserver.LOGGER.info("Player {} changed their password.", player.getName().getString());
+            Safeserver.LOGGER.info("玩家 {} 修改了密码。", player.getName().getString());
             return 1;
         } else {
             source.sendError(Text.literal(SafeserverConstants.CHECK_OLD_PASSWORD_ERROR));
-            Safeserver.LOGGER.warn("Failed password change attempt for player {}.", player.getName().getString());
+            Safeserver.LOGGER.warn("玩家 {} 修改密码失败（原密码错误）。", player.getName().getString());
             return 0;
         }
     }
@@ -196,24 +191,21 @@ public class AuthCommands {
         String targetName = targetPlayer.getName().getString();
         String sourceName = source.getName();
 
-        // Check if target player actually has a password registered with the mod
         if (!modInstance.hasPassword(targetUuid)) {
-             source.sendError(Text.literal("Player " + targetName + " does not have a password set by this mod."));
-             return 0;
+            source.sendError(Text.literal("玩家 " + targetName + " 尚未通过此插件设置密码。"));
+            return 0;
         }
 
         boolean success = modInstance.resetPlayerPassword(targetUuid);
 
         if (success) {
-            source.sendFeedback(() -> Text.literal("Password for player " + targetName + " has been reset. They will need to set a new one."), false);
-            Safeserver.LOGGER.info("Password for player {} ({}) was reset by {}.", targetName, targetUuid, sourceName);
-            // Message is sent to the target player within resetPlayerPassword if they are online
+            source.sendFeedback(() -> Text.literal("玩家 " + targetName + " 的密码已重置，他们需要重新设置新密码。"), false);
+            Safeserver.LOGGER.info("玩家 {} ({}) 的密码被 {} 重置。", targetName, targetUuid, sourceName);
             return 1;
         } else {
-            // This might happen if the player was just removed concurrently, though unlikely.
-            source.sendError(Text.literal("Failed to reset password for player " + targetName + ". They might not have a password set."));
-             Safeserver.LOGGER.error("Failed attempt by {} to reset password for player {} ({}).", sourceName, targetName, targetUuid);
+            source.sendError(Text.literal("无法重置玩家 " + targetName + " 的密码，可能该玩家未设置密码。"));
+            Safeserver.LOGGER.error("{} 尝试为玩家 {} ({}) 重置密码失败。", sourceName, targetName, targetUuid);
             return 0;
         }
     }
-} 
+}
