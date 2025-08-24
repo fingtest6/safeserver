@@ -54,14 +54,14 @@ public class PlayerStateManager {
         originalOpStatus.put(playerUuid, wasOp);
         if (wasOp) {
             server.getPlayerManager().removeFromOperators(player.getGameProfile());
-            LOGGER.info("Temporarily de-opped player {} ({}) for authentication.", playerName, playerUuid);
+            LOGGER.info("玩家 {} ({}) 的 OP 权限已临时移除，进入认证流程。", playerName, playerUuid);
         }
         
         player.changeGameMode(GameMode.SPECTATOR);
         player.networkHandler.requestTeleport(safePos.getX(), safePos.getY(), safePos.getZ(), 0, 0);
         player.addStatusEffect(new StatusEffectInstance(StatusEffects.BLINDNESS, Integer.MAX_VALUE, 0, false, false, true));
         
-        LOGGER.info("Applied spectator mode and blindness to {} for authentication.", playerName);
+        LOGGER.info("已为玩家 {} 设置旁观模式和失明效果，进入认证流程。", playerName);
     }
     
     public void sendWelcomeMessages(ServerPlayerEntity player, boolean hasPassword) {
@@ -87,7 +87,7 @@ public class PlayerStateManager {
             
             if (originalPos != null) {
                 player.networkHandler.requestTeleport(originalPos.getX(), originalPos.getY(), originalPos.getZ(), player.getYaw(), player.getPitch());
-                LOGGER.info("Teleported player {} back to original location after authentication.", playerName);
+                LOGGER.info("认证完成，已将玩家 {} 传送回原位置。", playerName);
             } else {
                 success = restoreToSpawn(player) && success;
             }
@@ -101,17 +101,17 @@ public class PlayerStateManager {
             
             if (player.hasStatusEffect(StatusEffects.BLINDNESS)) {
                 player.removeStatusEffect(StatusEffects.BLINDNESS);
-                LOGGER.info("Removed blindness from player {} after authentication.", playerName);
+                LOGGER.info("认证完成，已移除玩家 {} 的失明效果。", playerName);
             }
             
             if (wasOp != null && wasOp && serverInstance != null) {
                 serverInstance.getPlayerManager().addToOperators(player.getGameProfile());
-                LOGGER.info("Restored OP status for player {}.", playerName);
+                LOGGER.info("已恢复玩家 {} 的 OP 权限。", playerName);
             } else if (wasOp == null) {
-                LOGGER.warn("Original OP status for player {} (UUID {}) was unexpectedly missing during state restoration.", playerName, playerUuid);
+                LOGGER.warn("玩家 {} (UUID {}) 的原始 OP 状态在恢复时丢失。", playerName, playerUuid);
             }
         } else {
-            LOGGER.warn("Could not restore state for UUID {} (Player not found online).", playerUuid);
+            LOGGER.warn("无法恢复 UUID {} 的玩家状态（玩家不在线）。", playerUuid);
             cleanupPlayerState(playerUuid);
             success = false;
         }
@@ -137,7 +137,7 @@ public class PlayerStateManager {
             return;
         }
         
-        LOGGER.info("Player {} ({}) disconnecting during authentication. Attempting state restoration before save...", playerName, playerUuid);
+        LOGGER.info("玩家 {} ({}) 在认证过程中断开连接，尝试在保存前恢复状态...", playerName, playerUuid);
         
         GameMode originalMode = originalGameModes.get(playerUuid);
         Vec3d originalPos = originalPositionsBeforeAuth.get(playerUuid);
@@ -147,37 +147,37 @@ public class PlayerStateManager {
         try {
             if (originalPos != null) {
                 player.networkHandler.requestTeleport(originalPos.getX(), originalPos.getY(), originalPos.getZ(), player.getYaw(), player.getPitch());
-                LOGGER.info("Requested teleport for {} back to {} before disconnect save.", playerName, originalPos);
+                LOGGER.info("已请求将玩家 {} 传送回位置 {}，以便断开前保存。", playerName, originalPos);
                 restoredSomething = true;
             }
             
             GameMode modeToRestore = determineGameModeToRestore(originalMode, playerName);
             if (modeToRestore != null && player.interactionManager.getGameMode() != modeToRestore) {
                 player.changeGameMode(modeToRestore);
-                LOGGER.info("Restored gamemode for {} to {} before disconnect save.", playerName, modeToRestore);
+                LOGGER.info("已恢复玩家 {} 的游戏模式为 {}。", playerName, modeToRestore);
                 restoredSomething = true;
             }
             
             if (player.hasStatusEffect(StatusEffects.BLINDNESS)) {
                 player.removeStatusEffect(StatusEffects.BLINDNESS);
-                LOGGER.info("Removed blindness from {} before disconnect save.", playerName);
+                LOGGER.info("已移除玩家 {} 的失明效果。", playerName);
                 restoredSomething = true;
             }
             
             if (wasOp != null && wasOp && !server.getPlayerManager().isOperator(player.getGameProfile())) {
                 server.getPlayerManager().addToOperators(player.getGameProfile());
-                LOGGER.info("Restored OP status for {} before disconnect save.", playerName);
+                LOGGER.info("已恢复玩家 {} 的 OP 权限。", playerName);
                 restoredSomething = true;
             }
         } catch (Exception e) {
-            LOGGER.error("Error attempting immediate state restoration for {} during disconnect: {}", playerName, e.getMessage(), e);
+            LOGGER.error("尝试在断开连接时恢复玩家 {} 状态时发生错误：{}", playerName, e.getMessage(), e);
         }
         
         cleanupPlayerState(playerUuid);
         if (restoredSomething) {
-            LOGGER.info("Cleaned up authentication state for {} after attempting pre-disconnect restoration.", playerName);
+            LOGGER.info("已清理玩家 {} 的认证状态（断开前已恢复部分状态）。", playerName);
         } else {
-            LOGGER.warn("Cleaned up authentication state for {} (pre-disconnect restoration may not have completed fully).", playerName);
+            LOGGER.warn("已清理玩家 {} 的认证状态（断开前状态恢复可能未完全执行）。", playerName);
         }
     }
     
@@ -191,7 +191,7 @@ public class PlayerStateManager {
                     player.networkHandler.requestTeleport(initialPos.getX(), initialPos.getY(), initialPos.getZ(), player.getYaw(), player.getPitch());
                 }
             } else if (player == null || initialPos == null) {
-                LOGGER.warn("Cleaning up inconsistent authentication state for UUID: {}", playerUuid);
+                LOGGER.warn("检测到玩家 UUID {} 的认证状态异常，正在清理...", playerUuid);
                 cleanupPlayerState(playerUuid);
             }
         }
@@ -201,7 +201,7 @@ public class PlayerStateManager {
         UUID playerUuid = player.getUuid();
         String playerName = player.getName().getString();
         
-        LOGGER.info("Forcing player {} ({}) into authentication state after password reset.", playerName, playerUuid);
+        LOGGER.info("玩家 {} ({}) 密码已重置，强制进入认证状态。", playerName, playerUuid);
         
         authenticatingPlayers.add(playerUuid);
         originalGameModes.put(playerUuid, player.interactionManager.getGameMode());
@@ -216,7 +216,7 @@ public class PlayerStateManager {
         originalOpStatus.put(playerUuid, wasOp);
         if (wasOp) {
             serverInstance.getPlayerManager().removeFromOperators(player.getGameProfile());
-            LOGGER.info("Temporarily de-opped player {} ({}) due to password reset while online.", playerName, playerUuid);
+            LOGGER.info("玩家 {} ({}) 在线时密码被重置，已临时移除 OP 权限。", playerName, playerUuid);
         }
         
         player.changeGameMode(GameMode.SPECTATOR);
@@ -236,7 +236,7 @@ public class PlayerStateManager {
                 spawnPos.getZ() + SafeserverConstants.SAFE_SPAWN_CENTER_OFFSET
             );
         } else {
-            LOGGER.warn("Could not get Overworld to determine spawn point for player {}. Defaulting to fallback.", playerName);
+            LOGGER.warn("无法获取主世界以确定玩家 {} 的出生点，使用备用坐标。", playerName);
             return new Vec3d(
                 SafeserverConstants.SAFE_SPAWN_CENTER_OFFSET, 
                 SafeserverConstants.FALLBACK_Y_COORDINATE, 
@@ -247,7 +247,7 @@ public class PlayerStateManager {
     
     private boolean restoreToSpawn(ServerPlayerEntity player) {
         String playerName = player.getName().getString();
-        LOGGER.warn("Could not find original position for player {} during state restoration. Restoring to spawn.", playerName);
+        LOGGER.warn("无法找到玩家 {} 的原始位置，正在将其传送至出生点。", playerName);
         
         if (serverInstance != null) {
             ServerWorld overworld = serverInstance.getWorld(World.OVERWORLD);
@@ -263,11 +263,11 @@ public class PlayerStateManager {
                 );
                 return true;
             } else {
-                LOGGER.error("Could not get Overworld to restore player {} to spawn!", playerName);
+                LOGGER.error("无法获取主世界，无法将玩家 {} 传送至出生点！", playerName);
                 return false;
             }
         } else {
-            LOGGER.error("Could not get server instance to restore player {} to spawn!", playerName);
+            LOGGER.error("无法获取服务器实例，无法将玩家 {} 传送至出生点！", playerName);
             return false;
         }
     }
@@ -277,22 +277,22 @@ public class PlayerStateManager {
             if (originalMode == GameMode.SPECTATOR) {
                 if (serverInstance != null) {
                     GameMode defaultMode = serverInstance.getDefaultGameMode();
-                    LOGGER.info("Original gamemode was SPECTATOR, restoring to server default ({}) for player {}.", defaultMode, playerName);
+                    LOGGER.info("原始游戏模式为旁观模式，为玩家 {} 恢复为服务器默认模式（{}）。", playerName, defaultMode);
                     return defaultMode;
                 } else {
-                    LOGGER.error("Could not get server instance to determine default gamemode for player {}. Restoration may fail.", playerName);
+                    LOGGER.error("无法获取服务器实例，无法确定玩家 {} 的默认游戏模式，恢复可能失败。", playerName);
                     return null;
                 }
             } else {
-                LOGGER.info("Restored original gamemode ({}) for player {}.", originalMode, playerName);
+                LOGGER.info("已为玩家 {} 恢复原始游戏模式（{}）。", playerName, originalMode);
                 return originalMode;
             }
         } else {
-            LOGGER.warn("Could not find original gamemode for player {}. Setting to default.", playerName);
+            LOGGER.warn("无法找到玩家 {} 的原始游戏模式，将使用服务器默认模式。", playerName);
             if (serverInstance != null) {
                 return serverInstance.getDefaultGameMode();
             } else {
-                LOGGER.error("Could not get server instance to determine default gamemode for player {}. Restoration may fail.", playerName);
+                LOGGER.error("无法获取服务器实例，无法确定玩家 {} 的默认游戏模式，恢复可能失败。", playerName);
                 return null;
             }
         }
